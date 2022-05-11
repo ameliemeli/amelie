@@ -1,0 +1,162 @@
+---
+title: "Farebox recovery"
+author: "Amelie Wu"
+output:
+  beamer_presentation: default
+  slidy_presentation: default
+---
+
+```{r, include = FALSE}
+setwd("/Users/ameliewu/Desktop/Dollaride")
+
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(timetk)
+```
+
+```{r, include = FALSE}
+# Load data
+bq <- read.csv("rides5-10.csv", header=TRUE)
+stripe <- read.csv("stripe5-10.csv", header=TRUE)
+
+# NEEDS CHANGE EVERYTIME:  
+# Set this week's date (starting from Sunday)
+this_wk = as.Date("2022-05-01")
+last_wk = as.Date("2022-04-24")
+```
+
+```{r, include = FALSE}
+stripe <- stripe %>%
+  mutate(created_v2 = as.POSIXct(created, format="%Y-%m-%d %H:%M:%OS"), #transfer to datetime
+         created_v2 = ymd_hms(created_v2, tz = "UTC"), 
+         created_v2 = with_tz(created_v2, tzone = "America/New_York"), #convert to EDT
+         date = as.Date(created_v2),
+         hour = hour(created_v2), 
+         weekday = weekdays(date),
+         week = floor_date(date, unit = "week"),
+         dateTime = ymd_hms(created_v2),
+         source = "stripe") %>% 
+  filter (!weekday %in% c("Saturday","Sunday") &                                 # Exclude weekend 
+          status == "succeeded" &
+          refunded == "false" &
+          captured == "true" &
+          paid == "true",
+          !duplicated(id),
+          !duplicated(created))
+
+```
+
+```{r}
+#Load TapGo Stats
+##Load and clean Cashapp data
+cashapp <- read.csv("cashapp5-10.csv") 
+
+cashapp <- cashapp %>% 
+  mutate(dateTime = as.POSIXct(DateTime_Original, tz = "America/New_York"),
+         dateTime = ymd_hms(dateTime, tz = "America/New_York"),
+         date = as.Date(dateTime, tz = "America/New_York"),
+         week = floor_date(as.Date(dateTime), unit = "week"),
+         hour = hour(dateTime),
+         weekday = weekdays(date),
+         source = "cashapp") %>% 
+  filter(!(Weekday %in% c("Saturday", "Sunday"))) #Just to make sure
+  
+         
+##Load and clean Venmo data
+venmo <- read.csv("venmo5-10.csv")
+
+venmo <- venmo %>% 
+  mutate(date = as.POSIXct(paste0(Year, "-", Month, "-", Day), tz = "America/New_York"),
+         date = ymd(date, tz = "America/New_York"),
+         week = floor_date(date, unit = "week"),
+         dateTime = as.POSIXct(paste(date, Time), tz = "America/New_York"),
+         hour = hour(dateTime),
+         weekday = weekdays(date),
+         source = "venmo") %>% 
+  filter(!(Weekday %in% c("Saturday", "Sunday"))) #Just to make sure
+
+##INTEGRATE TAPGO WITH STRIPE HERE FOR SIMPLICITY
+#Choose only relevant columns for each dataset
+
+columnSelector <- function(dataset){
+  newdata <- dataset %>% 
+    select(dateTime, date, week, weekday, hour, source)
+  
+  return(newdata)
+}
+
+stripe_toMerge <- columnSelector(stripe)
+cashapp_toMerge <- columnSelector(cashapp)
+venmo_toMerge <- columnSelector(venmo)
+
+integratedRides <- rbind(stripe_toMerge,
+                         cashapp_toMerge,
+                         venmo_toMerge) %>% 
+  mutate(week = ymd(week)) %>%
+  arrange(desc(dateTime))
+
+```
+
+
+```{r}
+#Farebox recovery = weekly income from the vehicle ticket fares/ weekly expenses from vehicle operation›
+farebox_recovery <- 
+integratedRides %>%
+  filter(between(as.Date(week), as.Date("2021-09-27"), this_wk)) %>% #After beginning of service
+  group_by(week) %>%
+  summarize(wk_hr = 80,              #total revenue hour for a week 
+            total_rides = n(),       #total no. of rides over a week 
+            wk_inc = total_rides*2,  #weekly income from rides (no. of rides * ticket price $2)
+            wk_exp = wk_hr * 77.86,  #weekly expense from operating the vehicles =  
+                                     #(total revenue hours * vehicle cost per hr $77.86)
+            farebox_recovery = round(wk_inc/wk_exp,4)) %>%
+  select(week, farebox_recovery) 
+
+
+integratedRides %>%
+  filter(between(as.Date(week), as.Date("2021-09-27"), this_wk)) %>% #After beginning of service
+  group_by(week) %>%
+  summarize(wk_hr = 80,              #total revenue hour for a week 
+            total_rides = n(),       #total no. of rides over a week 
+            wk_inc = total_rides*2,  #weekly income from rides (no. of rides * ticket price $2)
+            wk_exp = wk_hr * 77.86,  #weekly expense from operating the vehicles =  
+                                     #(total revenue hours * vehicle cost per hr $77.86)
+            farebox_recovery = round(wk_inc/wk_exp,4)) %>%
+  filter(week == as.Date("2022-02-20"))
+```
+
+
+```{r}
+farebox_recovery %>%
+  filter(week >= (as.Date("2022-05-08")-90)) %>%
+  ggplot(aes(x = week, y = farebox_recovery)) + 
+    geom_line()+
+    geom_point(color = "grey", size = 1) +
+    geom_text(aes(label = farebox_recovery), 
+              check_overlap = TRUE, 
+              size = 3, hjust = 0.5, vjust = -1.5) +
+    scale_x_date(date_breaks = "week" , date_labels = "%m-%d") + 
+    #xlim(as.Date("2022-04-09"), as.Date( "2022-05-02")) +
+    ylim(0.02,0.06) +
+    labs(title = "Weekly Farebox Recovery Rate",
+         caption = 
+         "Weekly Farebox Recovery = weekly income from ticket fares as a % of vehicle operation expenses") +
+   theme(plot.caption = element_text(hjust = 0)) 
+   
+```
+
+
+
+
+
+
+
+
+
+
+
+
